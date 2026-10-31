@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>NYC Bike Safety Navigator</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #f4f7f6; margin: 0; padding: 20px; }
+        .grid { display: grid; grid-template-columns: 350px 1fr; gap: 20px; height: 90vh; }
+        .sidebar { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); overflow-y: auto; }
+        .map-container { border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        
+        input { width: 92%; padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 6px; }
+        button { width: 100%; padding: 12px; background: #28a745; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
+        
+        .score-box { text-align: center; padding: 15px; background: #f8f9fa; border-radius: 8px; margin-top: 20px; }
+        .grade-big { font-size: 60px; font-weight: 800; margin: 5px 0; }
+        .grade-A\+, .grade-A { color: #2ecc71; } 
+        .grade-B { color: #3498db; } 
+        .grade-C { color: #f1c40f; } 
+        .grade-D { color: #e67e22; } 
+        .grade-F { color: #e74c3c; }
+        
+        .street-item { padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; transition: 0.2s; }
+        .street-item:hover { background: #f1f1f1; border-left: 4px solid #28a745; }
+        .tag { font-size: 11px; padding: 2px 5px; background: #eee; border-radius: 4px; color: #555; }
+        
+        /* LAYER CONTROL: PERFECT ALIGNMENT + CARD STYLE */
+        .leaflet-control-layers-expanded {
+            padding: 10px 15px;
+            background: white;
+            border-radius: 8px;
+            min-width: 180px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+        .leaflet-control-layers-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .leaflet-control-layers label {
+            display: flex !important;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+            margin: 0;
+            cursor: pointer;
+        }
+        .leaflet-control-layers-selector {
+            order: 2;
+            margin: 0 0 0 10px !important;
+        }
+        .leaflet-control-layers-selector + span {
+            order: 1;
+            font-size: 14px;
+            font-weight: 600;
+            color: #333;
+            flex-grow: 1;
+            text-align: left;
+        }
+    </style>
+</head>
+<body>
+    <div class="grid">
+        <div class="sidebar">
+            <h2>🚲 NYC Bike Safety Navigator</h2>
+            <form method="POST">
+                <input type="text" name="start" placeholder="Start Location" value="{{s}}" required>
+                <input type="text" name="end" placeholder="End Location" value="{{e}}" required>
+                <button type="submit">Analyze Route</button>
+            </form>
+
+            {% if r and not error %}
+            <div class="score-box">
+                <div>Weighted Safety Score</div>
+                <div class="grade-big grade-{{r.grade}}">{{r.grade}}</div>
+                <div>{{r.score}} / 100</div>
+            </div>
+            
+            <h4 style="margin-top:20px;">Route Sequence:</h4>
+            <div id="street-list">
+                {% for st in r.streets %}
+                <div class="street-item" onclick="zoomToStreet({{st.lat}}, {{st.lon}}, '{{st.name}}')">
+                    <div style="display:flex; justify-content:space-between;">
+                        <strong>{{loop.index}}. {{st.name}}</strong>
+                        <span class="grade-{{st.grade}}"><b>{{st.grade}}</b></span>
+                    </div>
+                    <div style="margin-top:5px;">
+                        <span class="tag">{{st.dist}}</span>
+                        <span class="tag">{{st.lane}} Lane</span>
+                        <span class="tag">{{st.stats}}</span>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+            
+            {% if error %}
+            <div style="color:red; background:#fee; padding:10px; margin-top:20px; border-radius:5px;">{{error}}</div>
+            {% endif %}
+        </div>
+        <div id="map" class="map-container"></div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script>
+        var map = L.map('map').setView([40.75, -73.98], 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OSM'
+        }).addTo(map);
+        
+        var crashLayer = L.layerGroup().addTo(map);
+        var constLayer  = L.layerGroup().addTo(map);
+        var lightLayer = L.layerGroup(); 
+        var crimeLayer = L.layerGroup().addTo(map);
+
+        var overlays = {
+            "💥 Crashes": crashLayer,
+            "💡 Bad Lights": lightLayer,
+            "👮 Crime": crimeLayer
+        };
+        
+        L.control.layers(null, overlays, {position: 'topright'}).addTo(map);
+
+        {% if r and not error %}
+            var routeGeo = {{ r.geo | tojson }};
+            var routeLayer = L.geoJSON(routeGeo, {
+                style: {color: '#3498db', weight: 6, opacity: 0.8}
+            }).addTo(map);
+            map.fitBounds(routeLayer.getBounds());
+            
+            var data = {{ r.map_data | tojson }};
+            
+            if (data.crashes) data.crashes.forEach(function(p) {
+                L.circleMarker([p.lat, p.lon], {
+                    color: '#e74c3c',
+                    radius: 3,
+                    weight: 0,
+                    fillOpacity: 0.6
+                }).addTo(crashLayer).bindPopup("Crash");
+            });
+
+            if (data.construction) data.construction.forEach(function(p) {
+                L.circleMarker([p.latitude, p.longitude], {
+                    color: '#e67e22',
+                    radius: 4,
+                    weight: 0,
+                    fillOpacity: 0.8
+                }).addTo(constLayer).bindPopup("Construction Zone");
+            });
+
+            if (data.lights) data.lights.forEach(function(p) {
+                L.circleMarker([p.latitude, p.longitude], {
+                    color: '#f1c40f',
+                    radius: 4,
+                    weight: 0,
+                    fillOpacity: 0.8
+                }).addTo(lightLayer).bindPopup("Bad Light");
+            });
+
+            if (data.crime) data.crime.forEach(function(p) {
+                L.circleMarker([p.latitude, p.longitude], {
+                    color: '#3498db',
+                    radius: 4,
+                    weight: 0,
+                    fillOpacity: 0.6
+                }).addTo(crimeLayer).bindPopup("Crime Report");
+            });
+
+            function zoomToStreet(lat, lon, name) {
+                map.flyTo([lat, lon], 16);
+                L.popup().setLatLng([lat, lon]).setContent("<b>" + name + "</b>").openOn(map);
+            }
+        {% endif %}
+    </script>
+</body>
+</html>

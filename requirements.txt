@@ -1,0 +1,10 @@
+pandas>=2.0
+numpy>=1.24
+requests>=2.31
+SQLAlchemy>=2.0
+psycopg2-binary>=2.9
+pymongo>=4.6
+Flask>=3.0
+# testing
+pytest>=8.0
+mongomock>=4.1
